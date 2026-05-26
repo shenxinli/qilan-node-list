@@ -11,6 +11,7 @@ const EXTRA_HEADERS_JSON = normalizeHeaderValue(process.env.EXTRA_HEADERS_JSON ?
 const ORIGIN = normalizeHeaderValue(process.env.ORIGIN ?? process.env.QILAN_ORIGIN ?? 'https://www.qilan.de');
 const REFERER = normalizeHeaderValue(process.env.REFERER ?? process.env.QILAN_REFERER ?? 'https://www.qilan.de/');
 const ACCEPT_LANGUAGE = normalizeHeaderValue(process.env.ACCEPT_LANGUAGE ?? process.env.QILAN_ACCEPT_LANGUAGE ?? 'zh-CN,zh;q=0.9,en;q=0.8');
+const OUTPUT_FILE = normalizeHeaderValue(process.env.OUTPUT_FILE ?? process.env.OUT_FILE ?? 'nodes.txt') || 'nodes.txt';
 
 const NODE_COUNT = clampInt(process.env.NODE_COUNT, 1000, 1, 20000);
 const MIN_SCORE = clampInt(process.env.MIN_SCORE, 0, 0, 101);
@@ -28,7 +29,7 @@ if (MIN_SCORE > MAX_SCORE) {
   throw new Error(`Invalid score range: MIN_SCORE (${MIN_SCORE}) > MAX_SCORE (${MAX_SCORE})`);
 }
 
-const outPath = path.resolve(process.cwd(), 'nodes.txt');
+const outPath = path.resolve(process.cwd(), OUTPUT_FILE);
 
 try {
   await main();

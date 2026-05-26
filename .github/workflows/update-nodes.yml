@@ -4,27 +4,6 @@ on:
   schedule:
     - cron: '0 */4 * * *'
   workflow_dispatch:
-    inputs:
-      node_count:
-        type: string
-        required: false
-        default: '20000'
-      min_score:
-        type: string
-        required: false
-        default: '0'
-      max_score:
-        type: string
-        required: false
-        default: '101'
-      sort:
-        type: string
-        required: false
-        default: 'newest'
-      region:
-        type: string
-        required: false
-        default: ''
 
 permissions:
   contents: write
@@ -44,31 +23,29 @@ jobs:
           node-version: '20'
 
       - name: Remove previous nodes.txt
-        run: rm -f nodes.txt
+        run: rm -f nodes.txt nodes_all.txt
 
-      - name: Generate nodes.txt
+      - name: Generate nodes files
         env:
           COOKIE: ${{ secrets.QILAN_COOKIE }}
           AUTHORIZATION: ${{ secrets.QILAN_AUTHORIZATION }}
           EXTRA_HEADERS_JSON: ${{ secrets.QILAN_EXTRA_HEADERS_JSON }}
-          NODE_COUNT: ${{ inputs.node_count && inputs.node_count || '20000' }}
-          MIN_SCORE: ${{ inputs.min_score && inputs.min_score || '0' }}
-          MAX_SCORE: ${{ inputs.max_score && inputs.max_score || '101' }}
-          SORT: ${{ inputs.sort && inputs.sort || 'newest' }}
-          REGION: ${{ inputs.region && inputs.region || '' }}
         run: |
           if [ -z "$COOKIE" ]; then
-            echo "Missing secrets.QILAN_COOKIE. The API masks link values without a registered-member cookie, so nodes.txt cannot be generated."
+            echo "Missing secrets.QILAN_COOKIE. The API masks link values without a registered-member cookie, so nodes files cannot be generated."
             exit 1
           fi
-          node scripts/update-nodes.mjs
+          NODE_COUNT=1000 MIN_SCORE=54 MAX_SCORE=101 SORT=newest REGION='' OUTPUT_FILE=nodes.txt node scripts/update-nodes.mjs
+          NODE_COUNT=20000 MIN_SCORE=0 MAX_SCORE=101 SORT=newest REGION='' OUTPUT_FILE=nodes_all.txt node scripts/update-nodes.mjs
 
-      - name: Upload nodes.txt artifact
+      - name: Upload nodes artifacts
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: nodes.txt
-          path: nodes.txt
+          name: nodes
+          path: |
+            nodes.txt
+            nodes_all.txt
           if-no-files-found: warn
 
       - name: Commit and push
@@ -79,9 +56,9 @@ jobs:
           fi
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add nodes.txt
-          git commit -m "chore: update nodes.txt" || true
+          git add nodes.txt nodes_all.txt
+          git commit -m "chore: update nodes files" || true
           if ! git push; then
-            echo "Push failed. nodes.txt has been uploaded as an artifact for this run."
+            echo "Push failed. nodes files have been uploaded as an artifact for this run."
             exit 0
           fi
