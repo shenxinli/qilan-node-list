@@ -3,6 +3,8 @@ import path from 'node:path';
 
 const API_URL = process.env.API_URL ?? 'https://www.qilan.de/api/nodes';
 const COOKIE = process.env.COOKIE ?? process.env.QILAN_COOKIE ?? '';
+const FORCE_PUBLIC = isTruthy(process.env.FORCE_PUBLIC);
+const USER_AGENT = (process.env.USER_AGENT ?? '').trim();
 
 const NODE_COUNT = clampInt(process.env.NODE_COUNT, 1000, 1, 20000);
 const MIN_SCORE = clampInt(process.env.MIN_SCORE, 0, 0, 101);
@@ -12,6 +14,9 @@ const REGION = (process.env.REGION ?? '').trim();
 
 const API_LIMIT = clampInt(process.env.API_LIMIT, Math.min(NODE_COUNT, 20000), 1, 20000);
 const MAX_PAGES = clampInt(process.env.MAX_PAGES, 200, 1, 2000);
+const PUBLIC_LIMIT = clampInt(process.env.PUBLIC_LIMIT, 1000, 1, 1000);
+const RETRY_COUNT = clampInt(process.env.RETRY_COUNT, 3, 0, 10);
+const RETRY_DELAY_MS = clampInt(process.env.RETRY_DELAY_MS, 600, 0, 60_000);
 
 if (MIN_SCORE > MAX_SCORE) {
   throw new Error(`Invalid score range: MIN_SCORE (${MIN_SCORE}) > MAX_SCORE (${MAX_SCORE})`);
@@ -22,7 +27,7 @@ const outPath = path.resolve(process.cwd(), 'nodes.txt');
 await main();
 
 async function main() {
-  const mode = COOKIE ? 'member' : 'public';
+  const mode = FORCE_PUBLIC ? 'public' : (COOKIE ? 'member' : 'public');
 
   let links = [];
   try {
@@ -37,6 +42,10 @@ async function main() {
       sort: SORT,
       region: REGION,
       mode,
+      publicLimit: PUBLIC_LIMIT,
+      userAgent: USER_AGENT,
+      retryCount: RETRY_COUNT,
+      retryDelayMs: RETRY_DELAY_MS,
     });
   } catch (err) {
     if (isRegistrationRequired(err)) {
@@ -57,6 +66,10 @@ async function main() {
             sort: SORT,
             region: REGION,
             mode: 'public',
+            publicLimit: PUBLIC_LIMIT,
+            userAgent: USER_AGENT,
+            retryCount: RETRY_COUNT,
+            retryDelayMs: RETRY_DELAY_MS,
           });
         } catch (err2) {
           if (isRegistrationRequired(err2)) {
@@ -64,18 +77,12 @@ async function main() {
               process.stdout.write(`Still registration_required, keep existing ${outPath}\n`);
               return;
             }
-            await fs.writeFile(outPath, '', 'utf8');
-            process.stdout.write(`Still registration_required, wrote empty ${outPath}\n`);
-            return;
+            throw err2;
           }
           throw err2;
         }
       } else if (hasExisting) {
         process.stdout.write(`Got registration_required, keep existing ${outPath}\n`);
-        return;
-      } else {
-        await fs.writeFile(outPath, '', 'utf8');
-        process.stdout.write(`Got registration_required, wrote empty ${outPath}\n`);
         return;
       }
     }
@@ -101,6 +108,11 @@ function clampInt(value, defaultValue, min, max) {
   return Math.min(max, Math.max(min, chosen));
 }
 
+function isTruthy(value) {
+  const s = String(value ?? '').trim().toLowerCase();
+  return s === '1' || s === 'true' || s === 'yes' || s === 'on';
+}
+
 async function fetchLinks({
   apiUrl,
   cookie,
@@ -112,10 +124,19 @@ async function fetchLinks({
   sort,
   region,
   mode,
+  publicLimit,
+  userAgent,
+  retryCount,
+  retryDelayMs,
 }) {
+  const ua = userAgent || 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
   const headers = {
     accept: 'application/json, text/plain, */*',
-    'user-agent': 'qilan-node-list/1.0',
+    'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8',
+    'cache-control': 'no-cache',
+    pragma: 'no-cache',
+    origin: 'https://www.qilan.de',
+    'user-agent': ua,
     referer: 'https://www.qilan.de/',
   };
   if (cookie) headers.cookie = cookie;
@@ -123,7 +144,7 @@ async function fetchLinks({
   const seen = new Set();
   const links = [];
 
-  const effectiveLimit = mode === 'public' ? Math.min(apiLimit, 1000) : apiLimit;
+  const effectiveLimit = mode === 'public' ? Math.min(apiLimit, publicLimit) : apiLimit;
   const effectiveMaxPages = mode === 'public' ? 1 : maxPages;
 
   for (let page = 1; page <= effectiveMaxPages && links.length < nodeCount; page += 1) {
@@ -148,7 +169,7 @@ async function fetchLinks({
         };
     url.search = new URLSearchParams(params).toString();
 
-    const res = await fetch(url, { method: 'GET', headers });
+    const res = await fetchWithRetry(url, { method: 'GET', headers }, { retryCount, retryDelayMs });
     if (!res.ok) {
       const body = await safeReadText(res);
       const error = new Error(`Request failed: ${res.status} ${res.statusText}\n${body}`);
@@ -176,6 +197,42 @@ async function fetchLinks({
   }
 
   return links.slice(0, nodeCount);
+}
+
+async function fetchWithRetry(url, init, { retryCount, retryDelayMs }) {
+  let lastErr = null;
+  for (let attempt = 0; attempt <= retryCount; attempt += 1) {
+    try {
+      const res = await fetch(url, init);
+      if (res.status === 429 || (res.status >= 500 && res.status <= 599)) {
+        lastErr = new Error(`Retryable response: ${res.status} ${res.statusText}`);
+        await safeDrain(res);
+        if (attempt < retryCount) await sleep(retryDelayMs * Math.max(1, attempt + 1));
+        continue;
+      }
+      return res;
+    } catch (err) {
+      lastErr = err;
+      if (attempt < retryCount) {
+        await sleep(retryDelayMs * Math.max(1, attempt + 1));
+        continue;
+      }
+      break;
+    }
+  }
+  throw lastErr ?? new Error('Request failed');
+}
+
+async function safeDrain(res) {
+  try {
+    await res.arrayBuffer();
+  } catch {
+    // ignore
+  }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function isRegistrationRequired(err) {

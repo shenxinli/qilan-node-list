@@ -52,20 +52,12 @@ jobs:
 
       - name: Generate nodes.txt (fallback public)
         if: steps.generate_primary.outcome != 'success'
-        run: |
-          node -e "
-          const fs = require('fs');
-          const url = 'https://www.qilan.de/api/nodes?page=1&limit=1000';
-          fetch(url, { headers: { accept: 'application/json, text/plain, */*', 'user-agent': 'qilan-node-list/1.0', referer: 'https://www.qilan.de/' } })
-            .then(r => r.ok ? r.json() : r.text().then(t => { throw new Error(r.status + ' ' + r.statusText + '\\n' + t); }))
-            .then(j => Array.isArray(j && j.data) ? j.data : [])
-            .then(items => items.map(it => (it && typeof it.link === 'string' ? it.link.trim() : '')).filter(Boolean))
-            .then(links => {
-              fs.writeFileSync('nodes.txt', (links.length ? links.join('\\n') + '\\n' : ''), 'utf8');
-              process.stdout.write('Wrote ' + links.length + ' links to nodes.txt\\n');
-            })
-            .catch(e => { process.stderr.write(String(e && e.stack || e) + '\\n'); process.exit(1); });
-          "
+        env:
+          FORCE_PUBLIC: '1'
+          PUBLIC_LIMIT: '1000'
+          RETRY_COUNT: '3'
+          RETRY_DELAY_MS: '800'
+        run: node scripts/update-nodes.mjs
 
       - name: Upload nodes.txt artifact
         if: always()
