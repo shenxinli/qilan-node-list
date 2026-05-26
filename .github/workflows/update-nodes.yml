@@ -38,29 +38,28 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Generate nodes.txt (primary)
-        id: generate_primary
-        continue-on-error: true
+      - name: Remove previous nodes.txt
+        run: rm -f nodes.txt
+
+      - name: Generate nodes.txt
         env:
           COOKIE: ${{ secrets.QILAN_COOKIE }}
+          AUTHORIZATION: ${{ secrets.QILAN_AUTHORIZATION }}
+          EXTRA_HEADERS_JSON: ${{ secrets.QILAN_EXTRA_HEADERS_JSON }}
           NODE_COUNT: ${{ inputs.node_count && inputs.node_count || '1000' }}
           MIN_SCORE: ${{ inputs.min_score && inputs.min_score || '0' }}
           MAX_SCORE: ${{ inputs.max_score && inputs.max_score || '101' }}
           SORT: ${{ inputs.sort && inputs.sort || 'newest' }}
           REGION: ${{ inputs.region && inputs.region || '' }}
-        run: node scripts/update-nodes.mjs
-
-      - name: Generate nodes.txt (fallback public)
-        if: steps.generate_primary.outcome != 'success'
-        env:
-          FORCE_PUBLIC: '1'
-          PUBLIC_LIMIT: '1000'
-          RETRY_COUNT: '3'
-          RETRY_DELAY_MS: '800'
-        run: node scripts/update-nodes.mjs
+        run: |
+          if [ -z "$COOKIE" ]; then
+            echo "Missing secrets.QILAN_COOKIE. The API masks link values without a registered-member cookie, so nodes.txt cannot be generated."
+            exit 1
+          fi
+          node scripts/update-nodes.mjs
 
       - name: Upload nodes.txt artifact
-        if: always()
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: nodes.txt

@@ -2,9 +2,15 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 const API_URL = process.env.API_URL ?? 'https://www.qilan.de/api/nodes';
-const COOKIE = process.env.COOKIE ?? process.env.QILAN_COOKIE ?? '';
+const COOKIE = normalizeHeaderValue(process.env.COOKIE ?? process.env.QILAN_COOKIE ?? '');
 const FORCE_PUBLIC = isTruthy(process.env.FORCE_PUBLIC);
-const USER_AGENT = (process.env.USER_AGENT ?? '').trim();
+const DEBUG = isTruthy(process.env.DEBUG ?? process.env.QILAN_DEBUG);
+const USER_AGENT = normalizeHeaderValue(process.env.USER_AGENT ?? '');
+const AUTHORIZATION = normalizeHeaderValue(process.env.AUTHORIZATION ?? process.env.QILAN_AUTHORIZATION ?? '');
+const EXTRA_HEADERS_JSON = normalizeHeaderValue(process.env.EXTRA_HEADERS_JSON ?? process.env.QILAN_EXTRA_HEADERS_JSON ?? '');
+const ORIGIN = normalizeHeaderValue(process.env.ORIGIN ?? process.env.QILAN_ORIGIN ?? 'https://www.qilan.de');
+const REFERER = normalizeHeaderValue(process.env.REFERER ?? process.env.QILAN_REFERER ?? 'https://www.qilan.de/');
+const ACCEPT_LANGUAGE = normalizeHeaderValue(process.env.ACCEPT_LANGUAGE ?? process.env.QILAN_ACCEPT_LANGUAGE ?? 'zh-CN,zh;q=0.9,en;q=0.8');
 
 const NODE_COUNT = clampInt(process.env.NODE_COUNT, 1000, 1, 20000);
 const MIN_SCORE = clampInt(process.env.MIN_SCORE, 0, 0, 101);
@@ -24,7 +30,13 @@ if (MIN_SCORE > MAX_SCORE) {
 
 const outPath = path.resolve(process.cwd(), 'nodes.txt');
 
-await main();
+try {
+  await main();
+} catch (err) {
+  const msg = typeof err?.stack === 'string' ? err.stack : String(err);
+  process.stderr.write(msg + '\n');
+  process.exitCode = 1;
+}
 
 async function main() {
   const mode = FORCE_PUBLIC ? 'public' : (COOKIE ? 'member' : 'public');
@@ -44,6 +56,12 @@ async function main() {
       mode,
       publicLimit: PUBLIC_LIMIT,
       userAgent: USER_AGENT,
+      authorization: AUTHORIZATION,
+      extraHeadersJson: EXTRA_HEADERS_JSON,
+      origin: ORIGIN,
+      referer: REFERER,
+      acceptLanguage: ACCEPT_LANGUAGE,
+      debug: DEBUG,
       retryCount: RETRY_COUNT,
       retryDelayMs: RETRY_DELAY_MS,
     });
@@ -68,6 +86,12 @@ async function main() {
             mode: 'public',
             publicLimit: PUBLIC_LIMIT,
             userAgent: USER_AGENT,
+            authorization: AUTHORIZATION,
+            extraHeadersJson: EXTRA_HEADERS_JSON,
+            origin: ORIGIN,
+            referer: REFERER,
+            acceptLanguage: ACCEPT_LANGUAGE,
+            debug: DEBUG,
             retryCount: RETRY_COUNT,
             retryDelayMs: RETRY_DELAY_MS,
           });
@@ -79,10 +103,24 @@ async function main() {
             }
             throw err2;
           }
+          if (isLinkMasked(err2)) {
+            if (hasExisting) {
+              process.stdout.write(`Link masked, keep existing ${outPath}\n`);
+              return;
+            }
+            throw err2;
+          }
           throw err2;
         }
       } else if (hasExisting) {
         process.stdout.write(`Got registration_required, keep existing ${outPath}\n`);
+        return;
+      }
+    }
+    if (isLinkMasked(err)) {
+      const existing = await tryReadFile(outPath);
+      if (existing && existing.trim().length > 0) {
+        process.stdout.write(`Link masked, keep existing ${outPath}\n`);
         return;
       }
     }
@@ -113,6 +151,10 @@ function isTruthy(value) {
   return s === '1' || s === 'true' || s === 'yes' || s === 'on';
 }
 
+function normalizeHeaderValue(value) {
+  return String(value ?? '').replace(/[\r\n]+/g, ' ').trim();
+}
+
 async function fetchLinks({
   apiUrl,
   cookie,
@@ -126,26 +168,43 @@ async function fetchLinks({
   mode,
   publicLimit,
   userAgent,
+  authorization,
+  extraHeadersJson,
+  origin,
+  referer,
+  acceptLanguage,
+  debug,
   retryCount,
   retryDelayMs,
 }) {
   const ua = userAgent || 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
   const headers = {
     accept: 'application/json, text/plain, */*',
-    'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8',
+    'accept-language': acceptLanguage || 'zh-CN,zh;q=0.9,en;q=0.8',
     'cache-control': 'no-cache',
     pragma: 'no-cache',
-    origin: 'https://www.qilan.de',
+    origin: origin || 'https://www.qilan.de',
     'user-agent': ua,
-    referer: 'https://www.qilan.de/',
+    referer: referer || 'https://www.qilan.de/',
   };
   if (cookie) headers.cookie = cookie;
+  if (authorization) headers.authorization = authorization;
+  Object.assign(headers, parseExtraHeaders(extraHeadersJson));
+
+  if (debug) {
+    const headerNames = Object.keys(headers).sort();
+    process.stdout.write(`Debug: mode=${mode}, cookieLen=${cookie ? cookie.length : 0}, authLen=${authorization ? authorization.length : 0}\n`);
+    process.stdout.write(`Debug: headers=${headerNames.filter((h) => h !== 'cookie' && h !== 'authorization').join(',')}\n`);
+  }
 
   const seen = new Set();
   const links = [];
+  let totalItems = 0;
+  let maskedLinkFields = 0;
 
   const effectiveLimit = mode === 'public' ? Math.min(apiLimit, publicLimit) : apiLimit;
   const effectiveMaxPages = mode === 'public' ? 1 : maxPages;
+  let inferredPageSize = effectiveLimit;
 
   for (let page = 1; page <= effectiveMaxPages && links.length < nodeCount; page += 1) {
     const url = new URL(apiUrl);
@@ -183,8 +242,24 @@ async function fetchLinks({
     if (!Array.isArray(data)) {
       throw new Error('Unexpected response: missing array field "data"');
     }
+    if (page === 1 && data.length > 0 && data.length < inferredPageSize) {
+      inferredPageSize = data.length;
+      if (debug) process.stdout.write(`Debug: inferredPageSize=${inferredPageSize}\n`);
+    }
+    if (debug && page === 1) {
+      const sample = data[0]?.link;
+      const len = typeof sample === 'string' ? sample.trim().length : 0;
+      process.stdout.write(`Debug: page1 items=${data.length}, sampleLinkLen=${len}\n`);
+    }
 
     for (const item of data) {
+      totalItems += 1;
+      if (Object.prototype.hasOwnProperty.call(item ?? {}, 'link')) {
+        const raw = item?.link;
+        if (raw == null) maskedLinkFields += 1;
+        if (typeof raw === 'string' && raw.trim().length === 0) maskedLinkFields += 1;
+      }
+
       const link = typeof item?.link === 'string' ? item.link.trim() : '';
       if (!link) continue;
       if (seen.has(link)) continue;
@@ -193,7 +268,14 @@ async function fetchLinks({
       if (links.length >= nodeCount) break;
     }
 
-    if (data.length < effectiveLimit) break;
+    if (data.length === 0) break;
+    if (data.length < inferredPageSize) break;
+  }
+
+  if (links.length === 0 && totalItems > 0 && maskedLinkFields > 0) {
+    const error = new Error('Links are masked. The API returned items but link fields are empty. Provide a registered-member Cookie (QILAN_COOKIE) and any additional required headers (QILAN_AUTHORIZATION / QILAN_EXTRA_HEADERS_JSON).');
+    error.code = 'LINK_MASKED';
+    throw error;
   }
 
   return links.slice(0, nodeCount);
@@ -245,6 +327,33 @@ function isRegistrationRequired(err) {
   const body = typeof err.body === 'string' ? err.body : '';
   const msg = typeof err.message === 'string' ? err.message : '';
   return body.includes('registration_required') || msg.includes('registration_required');
+}
+
+function isLinkMasked(err) {
+  if (!err || (typeof err !== 'object' && typeof err !== 'function')) return false;
+  if (err.code === 'LINK_MASKED') return true;
+  const msg = typeof err.message === 'string' ? err.message : '';
+  return msg.includes('LINK_MASKED') || msg.includes('Links are masked');
+}
+
+function parseExtraHeaders(json) {
+  if (!json) return {};
+  let parsed;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    throw new Error('Invalid EXTRA_HEADERS_JSON: must be a JSON object of string header values.');
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('Invalid EXTRA_HEADERS_JSON: must be a JSON object of string header values.');
+  }
+  const out = {};
+  for (const [k, v] of Object.entries(parsed)) {
+    if (typeof k !== 'string' || !k.trim()) continue;
+    if (typeof v !== 'string') continue;
+    out[k] = v;
+  }
+  return out;
 }
 
 async function tryReadFile(filePath) {
