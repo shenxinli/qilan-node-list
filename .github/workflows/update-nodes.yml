@@ -56,7 +56,8 @@ jobs:
           fi
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add nodes.txt nodes_all.txt
+          git add nodes.txt
+          git add -f nodes_all.txt
           git commit -m "chore: update nodes files" || true
           if ! git push; then
             echo "Push failed. nodes files have been uploaded as an artifact for this run."
