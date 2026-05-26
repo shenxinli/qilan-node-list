@@ -179,10 +179,15 @@ async function fetchLinks({
 }
 
 function isRegistrationRequired(err) {
-  if (!err || typeof err !== 'object') return false;
-  if (err.status !== 403) return false;
+  if (!err || (typeof err !== 'object' && typeof err !== 'function')) return false;
+  const status = typeof err.status === 'number' ? err.status : Number.parseInt(String(err.status ?? ''), 10);
+  if (status !== 403) {
+    const msg = typeof err.message === 'string' ? err.message : '';
+    return msg.includes('403') && msg.includes('registration_required');
+  }
   const body = typeof err.body === 'string' ? err.body : '';
-  return body.includes('registration_required');
+  const msg = typeof err.message === 'string' ? err.message : '';
+  return body.includes('registration_required') || msg.includes('registration_required');
 }
 
 async function tryReadFile(filePath) {
