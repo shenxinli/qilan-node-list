@@ -2,24 +2,29 @@ name: Update nodes.txt
 
 on:
   schedule:
-    - cron: '0 * * * *'
+    - cron: '0 */4 * * *'
   workflow_dispatch:
     inputs:
       node_count:
         type: string
         required: false
+        default: '20000'
       min_score:
         type: string
         required: false
+        default: '0'
       max_score:
         type: string
         required: false
+        default: '101'
       sort:
         type: string
         required: false
+        default: 'newest'
       region:
         type: string
         required: false
+        default: ''
 
 permissions:
   contents: write
@@ -46,7 +51,7 @@ jobs:
           COOKIE: ${{ secrets.QILAN_COOKIE }}
           AUTHORIZATION: ${{ secrets.QILAN_AUTHORIZATION }}
           EXTRA_HEADERS_JSON: ${{ secrets.QILAN_EXTRA_HEADERS_JSON }}
-          NODE_COUNT: ${{ inputs.node_count && inputs.node_count || '1000' }}
+          NODE_COUNT: ${{ inputs.node_count && inputs.node_count || '20000' }}
           MIN_SCORE: ${{ inputs.min_score && inputs.min_score || '0' }}
           MAX_SCORE: ${{ inputs.max_score && inputs.max_score || '101' }}
           SORT: ${{ inputs.sort && inputs.sort || 'newest' }}
