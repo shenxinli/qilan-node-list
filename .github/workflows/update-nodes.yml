@@ -1,0 +1,61 @@
+name: Update nodes.txt
+
+on:
+  schedule:
+    - cron: '0 * * * *'
+  workflow_dispatch:
+    inputs:
+      node_count:
+        type: string
+        required: false
+      min_score:
+        type: string
+        required: false
+      max_score:
+        type: string
+        required: false
+      sort:
+        type: string
+        required: false
+      region:
+        type: string
+        required: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-nodes
+  cancel-in-progress: true
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Generate nodes.txt
+        env:
+          COOKIE: ${{ secrets.QILAN_COOKIE }}
+          NODE_COUNT: ${{ inputs.node_count && inputs.node_count || '1000' }}
+          MIN_SCORE: ${{ inputs.min_score && inputs.min_score || '0' }}
+          MAX_SCORE: ${{ inputs.max_score && inputs.max_score || '101' }}
+          SORT: ${{ inputs.sort && inputs.sort || 'newest' }}
+          REGION: ${{ inputs.region && inputs.region || '' }}
+        run: node scripts/update-nodes.mjs
+
+      - name: Commit and push
+        run: |
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "No changes"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add nodes.txt
+          git commit -m "chore: update nodes.txt"
+          git push
