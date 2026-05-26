@@ -13,6 +13,9 @@ const REFERER = normalizeHeaderValue(process.env.REFERER ?? process.env.QILAN_RE
 const ACCEPT_LANGUAGE = normalizeHeaderValue(process.env.ACCEPT_LANGUAGE ?? process.env.QILAN_ACCEPT_LANGUAGE ?? 'zh-CN,zh;q=0.9,en;q=0.8');
 const OUTPUT_FILE = normalizeHeaderValue(process.env.OUTPUT_FILE ?? process.env.OUT_FILE ?? 'nodes.txt') || 'nodes.txt';
 const MIN_LINKS = clampInt(process.env.MIN_LINKS, 0, 0, 20000);
+const SANITIZE_LINKS = isTruthy(process.env.SANITIZE_LINKS ?? process.env.SANITIZE_FOR_MIHOMO ?? '1');
+const NORMALIZE_DOUBLE_PERCENT = isTruthy(process.env.NORMALIZE_DOUBLE_PERCENT ?? '1');
+const MAX_PERCENT_DECODE_PASSES = clampInt(process.env.MAX_PERCENT_DECODE_PASSES, 5, 0, 5);
 
 const NODE_COUNT = clampInt(process.env.NODE_COUNT, 1000, 1, 20000);
 const MIN_SCORE = clampInt(process.env.MIN_SCORE, 0, 0, 101);
@@ -202,6 +205,7 @@ async function fetchLinks({
 
   const seen = new Set();
   const links = [];
+  let skippedInvalidLinks = 0;
   let totalItems = 0;
   let maskedLinkFields = 0;
 
@@ -265,9 +269,14 @@ async function fetchLinks({
 
       const link = typeof item?.link === 'string' ? item.link.trim() : '';
       if (!link) continue;
-      if (seen.has(link)) continue;
-      seen.add(link);
-      links.push(link);
+      const normalized = SANITIZE_LINKS ? normalizeLinkForClients(link) : link;
+      if (!normalized) {
+        skippedInvalidLinks += 1;
+        continue;
+      }
+      if (seen.has(normalized)) continue;
+      seen.add(normalized);
+      links.push(normalized);
       if (links.length >= nodeCount) break;
     }
 
@@ -279,6 +288,9 @@ async function fetchLinks({
     const error = new Error('Links are masked. The API returned items but link fields are empty. Provide a registered-member Cookie (QILAN_COOKIE) and any additional required headers (QILAN_AUTHORIZATION / QILAN_EXTRA_HEADERS_JSON).');
     error.code = 'LINK_MASKED';
     throw error;
+  }
+  if (debug && skippedInvalidLinks > 0) {
+    process.stdout.write(`Debug: skippedInvalidLinks=${skippedInvalidLinks}\n`);
   }
 
   return links.slice(0, nodeCount);
@@ -357,6 +369,88 @@ function parseExtraHeaders(json) {
     out[k] = v;
   }
   return out;
+}
+
+function normalizeLinkForClients(link) {
+  const trimmed = String(link ?? '').trim();
+  if (!trimmed) return null;
+
+  let s = trimmed;
+  if (NORMALIZE_DOUBLE_PERCENT && MAX_PERCENT_DECODE_PASSES > 0) {
+    s = collapseDoublePercentEncoding(s, MAX_PERCENT_DECODE_PASSES);
+  }
+  try {
+    s = encodeURI(s);
+  } catch {
+    // keep as-is
+  }
+
+  const scheme = getScheme(s);
+  if (scheme === 'trojan') {
+    s = normalizeTrojanUserInfo(s);
+  }
+  if (NORMALIZE_DOUBLE_PERCENT && MAX_PERCENT_DECODE_PASSES > 0) {
+    s = collapseDoublePercentEncoding(s, MAX_PERCENT_DECODE_PASSES);
+  }
+
+  if (containsUnsafeChars(s)) return null;
+  if (/\s/.test(s)) return null;
+  return s;
+}
+
+function getScheme(s) {
+  const m = /^([a-zA-Z][a-zA-Z0-9+.-]*):\/\//.exec(s);
+  return m ? m[1].toLowerCase() : '';
+}
+
+function normalizeTrojanUserInfo(s) {
+  const m = /^trojan:\/\/([^@]+)@([\s\S]+)$/.exec(s);
+  if (!m) return s;
+  const userInfo = m[1];
+  const rest = m[2];
+  const normalizedUserInfo = encodeUserInfoPreservingPercents(userInfo);
+  return `trojan://${normalizedUserInfo}@${rest}`;
+}
+
+function encodeUserInfoPreservingPercents(s) {
+  let out = '';
+  for (let i = 0; i < s.length; i += 1) {
+    const ch = s[i];
+    if (ch === '%' && i + 2 < s.length && isHex(s[i + 1]) && isHex(s[i + 2])) {
+      out += s.slice(i, i + 3);
+      i += 2;
+      continue;
+    }
+    if (isUnreserved(ch)) {
+      out += ch;
+      continue;
+    }
+    const encoded = encodeURIComponent(ch);
+    out += encoded;
+  }
+  return out;
+}
+
+function isHex(ch) {
+  return /^[0-9a-fA-F]$/.test(ch);
+}
+
+function isUnreserved(ch) {
+  return /^[A-Za-z0-9._~-]$/.test(ch);
+}
+
+function containsUnsafeChars(s) {
+  return /[<>"`{}|\\]/.test(s) || /[\u0000-\u001F\u007F]/.test(s);
+}
+
+function collapseDoublePercentEncoding(input, maxPasses) {
+  let s = String(input ?? '');
+  for (let i = 0; i < maxPasses; i += 1) {
+    const next = s.replace(/%25([0-9A-Fa-f]{2})/g, '%$1');
+    if (next === s) return s;
+    s = next;
+  }
+  return s;
 }
 
 async function tryReadFile(filePath) {
