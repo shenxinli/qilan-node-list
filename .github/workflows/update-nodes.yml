@@ -22,9 +22,6 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Remove previous nodes.txt
-        run: rm -f nodes.txt nodes_all.txt
-
       - name: Generate nodes files
         env:
           COOKIE: ${{ secrets.QILAN_COOKIE }}
@@ -35,8 +32,10 @@ jobs:
             echo "Missing secrets.QILAN_COOKIE. The API masks link values without a registered-member cookie, so nodes files cannot be generated."
             exit 1
           fi
-          NODE_COUNT=1000 MIN_SCORE=54 MAX_SCORE=101 SORT=newest REGION='' OUTPUT_FILE=nodes.txt node scripts/update-nodes.mjs
-          NODE_COUNT=20000 MIN_SCORE=0 MAX_SCORE=101 SORT=newest REGION='' OUTPUT_FILE=nodes_all.txt node scripts/update-nodes.mjs
+          NODE_COUNT=1000 MIN_SCORE=54 MAX_SCORE=101 SORT=newest REGION='' OUTPUT_FILE=nodes.txt MIN_LINKS=1 node scripts/update-nodes.mjs
+          wc -l nodes.txt || true
+          NODE_COUNT=20000 MIN_SCORE=0 MAX_SCORE=101 SORT=newest REGION='' OUTPUT_FILE=nodes_all.txt MIN_LINKS=1000 node scripts/update-nodes.mjs
+          wc -l nodes_all.txt || true
 
       - name: Upload nodes artifacts
         if: success()

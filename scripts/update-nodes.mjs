@@ -12,6 +12,7 @@ const ORIGIN = normalizeHeaderValue(process.env.ORIGIN ?? process.env.QILAN_ORIG
 const REFERER = normalizeHeaderValue(process.env.REFERER ?? process.env.QILAN_REFERER ?? 'https://www.qilan.de/');
 const ACCEPT_LANGUAGE = normalizeHeaderValue(process.env.ACCEPT_LANGUAGE ?? process.env.QILAN_ACCEPT_LANGUAGE ?? 'zh-CN,zh;q=0.9,en;q=0.8');
 const OUTPUT_FILE = normalizeHeaderValue(process.env.OUTPUT_FILE ?? process.env.OUT_FILE ?? 'nodes.txt') || 'nodes.txt';
+const MIN_LINKS = clampInt(process.env.MIN_LINKS, 0, 0, 20000);
 
 const NODE_COUNT = clampInt(process.env.NODE_COUNT, 1000, 1, 20000);
 const MIN_SCORE = clampInt(process.env.MIN_SCORE, 0, 0, 101);
@@ -128,12 +129,13 @@ async function main() {
     throw err;
   }
 
-  if (links.length === 0) {
+  if (links.length < MIN_LINKS) {
     const existing = await tryReadFile(outPath);
     if (existing && existing.trim().length > 0) {
-      process.stdout.write(`Fetched 0 links, keep existing ${outPath}\n`);
+      process.stdout.write(`Fetched ${links.length} links (< MIN_LINKS=${MIN_LINKS}), keep existing ${outPath}\n`);
       return;
     }
+    throw new Error(`Fetched ${links.length} links (< MIN_LINKS=${MIN_LINKS}). Refusing to overwrite ${outPath}.`);
   }
 
   const content = links.join('\n') + (links.length ? '\n' : '');
