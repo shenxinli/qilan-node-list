@@ -16,6 +16,7 @@ const MIN_LINKS = clampInt(process.env.MIN_LINKS, 0, 0, 20000);
 const SANITIZE_LINKS = isTruthy(process.env.SANITIZE_LINKS ?? process.env.SANITIZE_FOR_MIHOMO ?? '1');
 const NORMALIZE_DOUBLE_PERCENT = isTruthy(process.env.NORMALIZE_DOUBLE_PERCENT ?? '1');
 const MAX_PERCENT_DECODE_PASSES = clampInt(process.env.MAX_PERCENT_DECODE_PASSES, 5, 0, 5);
+const OUTPUT_FORMAT = normalizeHeaderValue(process.env.OUTPUT_FORMAT ?? 'raw').toLowerCase() || 'raw';
 
 const NODE_COUNT = clampInt(process.env.NODE_COUNT, 1000, 1, 20000);
 const MIN_SCORE = clampInt(process.env.MIN_SCORE, 0, 0, 101);
@@ -141,7 +142,7 @@ async function main() {
     throw new Error(`Fetched ${links.length} links (< MIN_LINKS=${MIN_LINKS}). Refusing to overwrite ${outPath}.`);
   }
 
-  const content = links.join('\n') + (links.length ? '\n' : '');
+  const content = renderOutput(links, OUTPUT_FORMAT);
   await fs.writeFile(outPath, content, 'utf8');
   process.stdout.write(`Wrote ${links.length} links to ${outPath}\n`);
 }
@@ -159,6 +160,13 @@ function isTruthy(value) {
 
 function normalizeHeaderValue(value) {
   return String(value ?? '').replace(/[\r\n]+/g, ' ').trim();
+}
+
+function renderOutput(links, format) {
+  const raw = links.join('\n') + (links.length ? '\n' : '');
+  if (format === 'raw') return raw;
+  if (format === 'base64') return Buffer.from(raw, 'utf8').toString('base64') + '\n';
+  throw new Error(`Invalid OUTPUT_FORMAT: ${format}. Supported: raw, base64`);
 }
 
 async function fetchLinks({
