@@ -33,8 +33,16 @@ jobs:
             exit 1
           fi
           NODE_COUNT=1000 MIN_SCORE=54 MAX_SCORE=101 SORT=newest REGION='' OUTPUT_FILE=nodes.txt OUTPUT_FORMAT=base64 MIN_LINKS=1 node scripts/update-nodes.mjs
+          if head -n 1 nodes.txt | grep -E '^(ss|trojan|vmess|vless|hysteria2?)://'; then
+            echo "nodes.txt is still raw, expected base64 subscription."
+            exit 1
+          fi
           wc -c nodes.txt || true
           NODE_COUNT=20000 MIN_SCORE=0 MAX_SCORE=101 SORT=newest REGION='' OUTPUT_FILE=nodes_all.txt OUTPUT_FORMAT=base64 MIN_LINKS=1000 node scripts/update-nodes.mjs
+          if head -n 1 nodes_all.txt | grep -E '^(ss|trojan|vmess|vless|hysteria2?)://'; then
+            echo "nodes_all.txt is still raw, expected base64 subscription."
+            exit 1
+          fi
           wc -c nodes_all.txt || true
 
       - name: Upload nodes artifacts
